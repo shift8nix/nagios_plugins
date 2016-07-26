@@ -24,6 +24,8 @@ Check network interface status using snmp.
 
 Performs checks for both administrative and operational state in same service. 
 
+Tested so far on Cisco, Mikrotik and Linux x86.
+
 In basic form return only current states. Response:
 
 *OK: Int:8   State:UP UP |  admin=1 oper=1*
