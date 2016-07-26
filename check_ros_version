@@ -1,0 +1,310 @@
+#! /bin/bash
+# This nagios plugin comes with ABSOLUTELY NO WARRANTY. You may redistribute copies of the plugin under the terms of the BSD License.
+# Developed by Edgars Simanis - https://github.com/shift8nix/nagios_plugins
+# Checks Mikrotik RouterOS version and optionally compares to current one
+# Depends on: snmpget command (net-snmp-utils); https://lsrel.com website if --track set.
+
+
+#	#	#	#	ENV AND HELP	#	#	#	#
+
+
+# Check if debug|verbose argument present and set bash options
+for i in "$@" ; do [[ $i == "--verbose" ]] && set -v && _debug="1" && break ; done
+for i in "$@" ; do [[ $i == "--debug" ]] && set -x && _debug="1" && break ; done
+
+# Env variables
+PATH="/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin"
+export PATH
+PROGNAME=$(basename $0)
+REVISION="1.0"
+PROGPATH=$(echo $0 | sed -e 's,[\\/][^\\/][^\\/]*$,,')
+PATH="/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin"
+
+# Oid for snmpget
+oid_version_channel=".1.3.6.1.2.1.47.1.1.1.1.2.65536" # Change if different
+oid_version=".1.3.6.1.4.1.14988.1.1.4.4.0" # Change if different
+
+# Function - describe programm
+f_version () {
+echo $PROGNAME v$REVISION
+echo -e "
+This nagios plugin comes with ABSOLUTELY NO WARRANTY. You may redistribute
+copies of the plugin under the terms of the BSD License.
+
+Developed by Edgars Simanis - https://github.com/shift8nix/nagios_plugins
+
+Checks Mikrotik RouterOS version and optionally compares to current one
+
+Depends on: Linux net-snmp-utils; https://lsrel.com website if --track set.
+"; }
+
+# Function - describe usage
+f_usage () {
+echo -e "
+USAGE: $PROGNAME -H hostname [OPTIONS]
+Example: $PROGNAME -u admin -A passwd123 -a SHA -X passwd123 -x AES -l authPriv -H 127.0.0.1 -v 3  --track
+SNMP options used here are the same as in snmpget command. So if unsure test response with snmpget first.
+OIDs used are $oid_version_channel and $oid_version"; }
+
+# Function - help output
+f_help () {
+f_version
+f_usage
+echo -e "
+Options:
+SNMP Options
+  -v 1|2c|3		specifies SNMP version to use [2c]
+
+SNMP Version 1 or 2c specific
+  -c COMMUNITY		set the community string [public]
+
+SNMP Version 3 specific
+  -a PROTOCOL		set authentication protocol (MD5|SHA)
+  -A PASSPHRASE		set authentication protocol pass phrase
+  -e ENGINE-ID		set security engine ID (e.g. 800000020109840301)
+  -E ENGINE-ID		set context engine ID (e.g. 800000020109840301)
+  -l LEVEL		set security level (noAuthNoPriv|authNoPriv|authPriv)
+  -n CONTEXT		set context name (e.g. bridge1)
+  -u USER-NAME		set security name (e.g. bert)
+  -x PROTOCOL		set privacy protocol (DES|AES)
+  -X PASSPHRASE		set privacy protocol pass phrase
+  -Z BOOTS,TIME		set destination engine boots/time
+
+SNMP communication options
+  -r RETRIES		set the number of retries [2]
+  -t TIMEOUT		set the request timeout (in seconds)
+
+Plugin specific options
+  -h, --help		display this help message
+  --verbose		debug plugin with: bash set -v
+  --debug		debug plugin with: bash set -x
+  -V, --version		display package version number	
+  -H, --hostname	hostname or ip address, non-optional
+  --track		Enable version tracking using lsrel.com []
+  --dc, --desired_channel	Set RouterOS update channel [auto] (current|testing|bugfix)
+
+Customize return codes used (0-Ok, 1-Warning, 2-Critical, 3-Unknown)
+  --r1, --return_if_not_current		Return code if version not current [1] (0|1|2|3)
+  --r2, --return_if_maybe		Return code if --track set and lsrel.com down [0] (0|1|2|3)
+  --r3, --return_if_no_result		Return code if snmp not reachable [3] (0|1|2|3)
+
+Custom OIDs if default don't work
+  --oid_full	Mikrotik oid for RouterOS version + channel + device (.1.3.6.1.2.1.47.1.1.1.1.2.65536)
+  --oid_ver	Mikrotik oid for RouterOS version number only (.1.3.6.1.4.1.14988.1.1.4.4.0)
+"; }
+
+
+
+#	#	#	#	VARIABLES AND ARGUMENT PARSING	#	#	#	#
+
+
+
+# Default variables
+track_version="no"		
+return_if_not_current="1"	
+return_if_maybe="0"	
+return_if_no_result="3"
+_protocol="-v 2c"
+_community="-c public"
+desired_channel=""
+_RETRIES="-r 2"
+
+# Regex pattern to check if response is as expected and valid
+response_regex="^RouterOS\s(0|[1-9]*)\.(0|[1-9]*)(rc(0|[1-9]*))|\.(0|[1-9]*).*"
+ros_ver_regex="^(0|[1-9]*)\.(0|[1-9]*)(rc(0|[1-9]*))|\.(0|[1-9]*).*$"
+
+
+
+# Argument parsing
+while test -n "$1"; do
+	case "$1" in
+	-v)
+		_protocol="-v $2"
+		shift
+		;;
+	-c)
+		_community="-c $2"
+		shift
+		;;
+ 	-a)
+		_AUTH_PROTOCOL="-a $2"
+		shift
+		;;		
+  	-A)
+		_AUTH_PASSPHRASE="-A $2"
+		shift
+		;;		
+  	-e)
+		_S_ENGINE_ID="-e $2"
+		shift
+		;;		
+  	-E)
+		_C_ENGINE_ID="-E $2"
+		shift
+		;;		
+  	-l)
+		_LEVEL="-l $2"
+		shift
+		;;		
+  	-n)
+		_CONTEXT="-n $2"
+		shift
+		;;		
+  	-u) 	
+		_USER_NAME="-u $2"
+		shift
+		;;		
+  	-x)
+		_PRIV_PROTOCOL="-x $2"
+		shift
+		;;		
+  	-X)
+		_PRIV_PASSPHRASE="-X $2"
+		shift
+		;;		
+  	-Z) 
+		_BOOTS="-Z $2"
+		shift
+		;;		
+	-r)
+		_RETRIES="-r $2"
+		shift
+		;;		
+  	-t)
+		_TIMEOUT="-t $2"
+		shift
+		;;				
+  	-V|--version)
+		f_version; exit 0
+		;;		
+	-H|--hostname)
+		_hostname=$2
+		shift
+		;;	
+  	--track)
+		track_version="yes"
+		;;		
+  	--dc|--desired_channel)
+		if [[ $2 =~ ^bugfix$|^current$|^testing$ ]]; then		
+			desired_channel=$2
+		else
+			echo "!!!  Unknown option: $1 $2  Use: --help"; exit 3
+		fi
+		shift
+		;;	
+  	--r1|--return_if_not_current)
+		if [[ "$2" =~ ^[0|1|2|3]$ ]]; then		
+			return_if_not_current=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help";  exit 3
+		fi
+		shift
+		;;
+  	--r2|--return_if_maybe)
+		if [["$2" =~ ^[0|1|2|3]$ ]]; then		
+			return_if_maybe=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help"; exit 3
+		fi
+		shift
+		;;	
+	--r3|--return_if_no_result)
+		if [[ "$2" =~ ^[0|1|2|3]$ ]]; then		
+			return_if_no_result=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help"; exit 3
+		fi
+		shift
+		;;
+	--oid_full)
+		oid_version_channel=$2
+		shift
+		;;
+	--oid_ver)
+		oid_version=$2
+		shift
+		;;
+	-h|--help|\?)
+		f_help; exit 0
+		;;	
+	--verbose|--debug)
+		;;
+	*)
+		echo "!!! Unknown argument: $1 $2  Use: --help";  exit 3
+		;;
+	esac
+	shift
+done
+
+
+# Check if hostname set
+if [[ "$_hostname" == "" ]]; then echo "!!! Hostname not set. Use: --help"; exit 3; fi
+
+# Set connection variables depending on snmp version used (1|2c|3) for easier debug
+if [[ "$_protocol" =~ [3] ]];then
+	ros_conn="$_protocol $_RETRIES $_TIMEOUT $_AUTH_PROTOCOL $_AUTH_PASSPHRASE $_S_ENGINE_ID $_C_ENGINE_ID $_LEVEL $_CONTEXT $_USER_NAME $_PRIV_PROTOCOL $_PRIV_PASSPHRASE $_BOOTS $_hostname"
+else
+	ros_conn="$_community $_protocol $_RETRIES $_TIMEOUT $_hostname"
+fi
+
+
+#	#	#	#	ACTION STARTS HERE	#	#	#	#
+
+
+
+# Connect via snmp and get results
+
+# Full Result version + channel
+result=$(snmpget $ros_conn -Ovq "$oid_version_channel" 2>/dev/null | tr -d '"') 
+# Only version number (more reliable than extracting with regex from above)
+ros_version=$(snmpget $ros_conn -Ovq "$oid_version" 2>/dev/null | tr -d '"')
+
+# Nagios metric as "major.minor"
+metric=$(echo $ros_version | grep -o '^[[:digit:]]*\.[[:digit:]]*')
+
+
+
+# Get version channel name
+if [[ "$desired_channel" != "" ]]; then
+	ros_channel=$desired_channel # If --desired_channel set - use that
+else
+	ros_channel=$(echo $result | grep -E -o 'testing|bugfix|current' ) # Else find it out from snmp response
+fi
+
+
+
+# If result valid and --track not set
+if [[ "$result" =~ $response_regex ]] && [[ $track_version == "no" ]]; then
+	echo "OK: $result | $metric"  	# Echo only result and exit ok
+	exit 0
+
+
+
+# If result valid and --track set
+elif [[ "$result" =~ $response_regex ]] && [[ $track_version == "yes" ]]; then
+
+	# Get current version from lsrel.com
+	current_ver=$(curl -s --max-time 2 https://$ros_channel.routeros.lsrel.com) || { echo "MAYBE CURRENT: $result | $metric"; exit $return_maybe; }
+
+	if [[ "$current_ver" == $ros_version ]]; then # If both the same
+	        echo "CURRENT: $result | $metric"
+       		exit 0
+
+	elif [[ "$current_ver" == "" ]] || [[ ! $current_ver =~ $ros_ver_regex ]];then # If response from lsrel.com empty or does not match regex
+                echo "MAYBE CURRENT: $result | $metric"
+                exit $return_maybe
+
+	else
+		echo "NOT CURRENT: NEW=\"$current_ver($ros_channel)\" $result | $metric" # Else response from lsrel.com must be ok and version newer(?)
+                exit $return_not_curr
+	fi	
+
+
+
+# If result not valid failsafe
+else
+	echo  "ERR: snmpget - Could not get result | 0"
+	exit $return_no_res
+fi
+
+exit 3

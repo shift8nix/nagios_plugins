@@ -1,0 +1,429 @@
+#! /bin/bash
+# This nagios plugin comes with ABSOLUTELY NO WARRANTY. You may redistribute copies of the plugin under the terms of the BSD License.
+# Developed by Edgars Simanis - https://github.com/shift8nix/nagios_plugins
+# Checks Interface port states in dual admin/oper up/down fashion
+# Tested with Cisco, Linux, Mikrotik and probably works on most of other equipment
+# Depends on: snmpget command (net-snmp-utils)
+
+
+#	#	#	#	ENV AND HELP	#	#	#	#
+
+
+# Check if debug|verbose argument present and set bash options
+for i in "$@" ; do [[ $i == "--verbose" ]] && set -v && _debug="1" && break ; done
+for i in "$@" ; do [[ $i == "--debug" ]] && set -x && _debug="1" && break ; done
+
+# Env variables
+PATH="/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin"
+export PATH
+PROGNAME=$(basename $0)
+REVISION="1.0"
+PROGPATH=$(echo $0 | sed -e 's,[\\/][^\\/][^\\/]*$,,')
+PATH="/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin"
+
+# Function - describe programm
+f_version () {
+echo $PROGNAME v$REVISION
+echo -e "
+This nagios plugin comes with ABSOLUTELY NO WARRANTY. You may redistribute
+copies of the plugin under the terms of the BSD License.
+
+Developed by Edgars Simanis - https://github.com/shift8nix/nagios_plugins
+
+Checks Interface port states in dual administrative/operational up/down fashion
+Tested with Cisco, Linux, Mikrotik and probably works on most of other equipment 
+
+Depends on: Linux net-snmp-utils
+"; }
+
+# Function - describe usage
+f_usage () {
+echo -e "
+USAGE: $PROGNAME -H hostname --int_(name|descr|index) value [OPTIONS]
+Example: $PROGNAME -u admin -A passwd123 -a SHA -X passwd123 -x AES -l authPriv -H 127.0.0.1 -v 3  --int_index 4
+SNMP options used here are the same as in snmpget command. So if unsure test response with snmpget first.
+OIDs used are listed in --help. Interface state combinations in --table"; }
+	
+
+# Function - help output
+f_help () {
+f_version
+f_usage
+echo -e "
+Options:
+SNMP Options
+  -v 1|2c|3		specifies SNMP version to use [2c]
+
+SNMP Version 1 or 2c specific
+  -c COMMUNITY		set the community string [public]
+
+SNMP Version 3 specific
+  -a PROTOCOL		set authentication protocol (MD5|SHA)
+  -A PASSPHRASE		set authentication protocol pass phrase
+  -e ENGINE-ID		set security engine ID (e.g. 800000020109840301)
+  -E ENGINE-ID		set context engine ID (e.g. 800000020109840301)
+  -l LEVEL		set security level (noAuthNoPriv|authNoPriv|authPriv)
+  -n CONTEXT		set context name (e.g. bridge1)
+  -u USER-NAME		set security name (e.g. bert)
+  -x PROTOCOL		set privacy protocol (DES|AES)
+  -X PASSPHRASE		set privacy protocol pass phrase
+  -Z BOOTS,TIME		set destination engine boots/time
+
+SNMP communication options
+  -r RETRIES		set the number of retries [2]
+  -t TIMEOUT		set the request timeout (in seconds)
+
+Plugin specific options
+  -h, --help		display this help message
+  --verbose		debug plugin with: bash set -v
+  --debug		debug plugin with: bash set -x
+  -V, --version		display package version number	
+  -H, --hostname	hostname or ip address, non-optional
+  --table		Display interface state combinations and return variables used		
+  --negate_admin_state	Set administrative and operational state down as normal - down/down []
+  --negate_oper_state	Set operational state down as normal - up/down []
+  --ignore_oper		Ignore operational state chages []
+  --display_desc	Display interface description [] # first 25 chars only
+  --display_type	Display interface type if possible []
+
+Define interface to check in one of the following ways.
+  --int_name		Check against ifName
+  --int_descr		Check against ifDescr
+  --int_index		Check against ifIndex
+
+Return codes. Normally operational state change takes precedence check --table for more
+  --admin_error		Return code if administrative state changes [1] (0|1|2|3)
+  --oper_error		Return code if operational state changes [2] (0|1|2|3)
+  --unkn_error		Return code for unknown [3] (0|1|2|3)
+
+OIDs and IF_MIBs if default not working
+  --oid_ifIndex		[IF-MIB::ifIndex] alternative .1.3.6.1.2.1.2.2.1.1
+  --oid_ifType		[IF-MIB::ifType] alternative .1.3.6.1.2.1.2.2.1.3
+  --oid_ifDescr		[IF-MIB::ifDescr] alternative .1.3.6.1.2.1.2.2.1.2
+  --oid_ifName		[IF-MIB::ifName] alternative .1.3.6.1.2.1.31.1.1.1.1
+  --oid_ifAdminStatus	[IF-MIB::ifAdminStatus] alternative .1.3.6.1.2.1.2.2.1.7
+  --oid_ifOperStatus	[IF-MIB::ifOperStatus] alternative .1.3.6.1.2.1.2.2.1.8
+"; }
+
+
+
+f_table () {
+echo -e "
+Interface state table
+Normally operational state change takes precedence. But if you set --ignore_oper flag - only admin state changes are reported.
+See below for state change combinations and error types. This allows for some flexibility in reporting preferences.
+
+[Default]
+Flags Used		Desired State	Changed State		Changed State
+--------------------------------------------------------------------------------------------
+[Default]		up/up=ok(4)	-> up/down=oper_error(3) -> down/down=oper_error(2)
+(--negate_oper_state)	up/down=ok(2)	-> up/up=oper_error(3)	 -> down/down=admin_error(1)
+(--negate_admin_state)	down/down=ok(0)	-> up/down=admin_error(1)-> up/up=oper_error(2)
+
+[--ignore_oper flag set]
+Flags Used		Desired State	Changed State		Changed State
+---------------------------------------------------------------------------------------------
+[Default]		up/up=ok(4)	-> up/down=ok(3)         -> down/down=admin_error(2)
+(--negate_oper_state)	up/down=ok(2)	-> up/up=ok(3)		 -> down/down=admin_error(1)
+(--negate_admin_state)	down/down=ok(0)	-> up/down=admin_error(1)-> up/up=admin_error(2)
+" ; }
+
+
+
+#	#	#	#	VARIABLES AND ARGUMENT PARSING	#	#	#	#
+
+# Default vars
+desired_state="2"	# int expected up/up
+ignore_oper="no"
+# OIDs used
+oid_ifIndex="IF-MIB::ifIndex"
+oid_ifType="IF-MIB::ifType"
+oid_ifDescr="IF-MIB::ifDescr"
+oid_ifName="IF-MIB::ifName"
+oid_ifAdminStatus="IF-MIB::ifAdminStatus"
+oid_ifOperStatus="IF-MIB::ifOperStatus"
+# SNMP default variables
+_protocol="-v 2c"
+_community="-c public"
+_RETRIES="-r 2"
+# default error codes
+admin_error="1"
+oper_error="2"
+unkn_error="3"
+
+
+# Argument parsing
+while test -n "$1"; do
+	case "$1" in
+	-v)
+		_protocol="-v $2"
+		shift
+		;;
+	-c)
+		_community="-c $2"
+		shift
+		;;
+ 	-a)
+		_AUTH_PROTOCOL="-a $2"
+		shift
+		;;		
+  	-A)
+		_AUTH_PASSPHRASE="-A $2"
+		shift
+		;;		
+  	-e)
+		_S_ENGINE_ID="-e $2"
+		shift
+		;;		
+  	-E)
+		_C_ENGINE_ID="-E $2"
+		shift
+		;;		
+  	-l)
+		_LEVEL="-l $2"
+		shift
+		;;		
+  	-n)
+		_CONTEXT="-n $2"
+		shift
+		;;		
+  	-u) 	
+		_USER_NAME="-u $2"
+		shift
+		;;		
+  	-x)
+		_PRIV_PROTOCOL="-x $2"
+		shift
+		;;		
+  	-X)
+		_PRIV_PASSPHRASE="-X $2"
+		shift
+		;;		
+  	-Z) 
+		_BOOTS="-Z $2"
+		shift
+		;;		
+	-r)
+		_RETRIES="-r $2"
+		shift
+		;;		
+  	-t)
+		_TIMEOUT="-t $2"
+		shift
+		;;				
+  	-V|--version)
+		f_version; exit 0
+		;;		
+	-H|--hostname)
+		_hostname=$2
+		shift
+		;;	
+  	--table)
+		f_table; exit 0
+		;;
+	--negate_admin_state)
+		desired_state="0"
+		;;
+	--negate_oper_state)
+		desired_state="1"
+		;;
+	--ignore_oper)
+		ignore_oper="yes"
+		;;
+	--display_desc)
+		 display_desc="1"
+		;;
+	--display_type)
+		 display_type="1"
+		;;
+	--admin_error)
+		if [[ "$2" =~ ^[0|1|2|3]$ ]]; then		
+			admin_error=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help";  exit 3
+		fi
+		shift
+		;;
+  	--oper_error)
+		if [["$2" =~ ^[0|1|2|3]$ ]]; then		
+			oper_error=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help"; exit 3
+		fi
+		shift
+		;;	
+	--unkn_error)
+		if [[ "$2" =~ ^[0|1|2|3]$ ]]; then		
+			unkn_error=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help"; exit 3
+		fi
+		shift
+		;;
+	--oid_ifIndex)
+		oid_ifIndex=$2
+		shift
+		;;
+	--oid_ifType)
+		oid_ifType=$2
+		shift
+		;;
+	--oid_ifDescr)
+		oid_ifDescr=$2
+		shift
+		;;
+	--oid_ifName)
+		oid_ifName=$2
+		shift
+		;;
+	--oid_ifAdminStatus)
+		oid_ifAdminStatus=$2
+		shift
+		;;
+	--oid_ifOperStatus)
+		oid_ifOperStatus=$2
+		shift
+		;;
+	--int_name)
+		if [[ "$interface_set" != "" ]]; then # if --int_* already specified
+			 echo "!!! too many same arguments: $1 Use: --help";  exit 3
+		fi
+		interface_set="1"
+		int_name=$2
+		shift
+		;;
+	--int_descr)
+		if [[ "$interface_set" != "" ]]; then # if --int_* already specified
+			 echo "!!! too many same arguments: $1 Use: --help";  exit 3
+		fi
+		interface_set="1"
+		int_descr=$2
+		shift
+		;;
+	--int_index)
+		if [[ "$interface_set" != "" ]]; then # if --int_* already specified
+			 echo "!!! too many same arguments: $1 Use: --help";  exit 3
+		fi
+		interface_set="1"
+		if [[ $2 =~ ^[1-9][0-9]{,4}$ ]]; then
+			interface_index=$2
+		else
+			echo "!!! Unknown option: $1 $2  Use: --help";  exit 3	
+		fi	
+		shift
+		;;		
+	-h|--help|\?)
+		f_help; exit 0
+		;;	
+	--verbose|--debug)
+		;;
+	*)
+		echo "!!! Unknown argument: $1 $2  Use: --help";  exit 3
+		;;
+	esac
+	shift
+done
+
+
+
+# Check if hostname set
+if [[ "$_hostname" == "" ]]; then echo "!!! Hostname not set. Use: --help"; exit 3; fi
+
+# Check if interface set
+if [[ "$interface_set" == "" ]]; then echo "!!! Interface not set. Use: --help"; exit 3; fi
+
+# Set connection variables depending on snmp version used (1|2c|3) for easier debug
+if [[ "$_protocol" =~ [3] ]];then
+	ros_conn="$_protocol $_RETRIES $_TIMEOUT $_AUTH_PROTOCOL $_AUTH_PASSPHRASE $_S_ENGINE_ID $_C_ENGINE_ID $_LEVEL $_CONTEXT $_USER_NAME $_PRIV_PROTOCOL $_PRIV_PASSPHRASE $_BOOTS $_hostname"
+else
+	ros_conn="$_community $_protocol $_RETRIES $_TIMEOUT $_hostname"
+fi
+
+
+
+#	#	#	#	ACTION STARTS HERE	#	#	#	#
+
+# Find interface index number if index not used
+if [[ "$int_name" != "" ]]; then
+	interface_index=$(snmpwalk $ros_conn $oid_ifName 2>/dev/null | grep -E "\<$int_name\>" | awk -F ' = ' '{print $1}' | awk -F '.'  '{print $NF}')
+elif [[ "$int_descr" != "" ]]; then
+	interface_index=$(snmpwalk $ros_conn $oid_ifDescr 2>/dev/null | grep -E "\<$int_descr\>" | awk -F ' = ' '{print $1}' | awk -F '.'  '{print $NF}')
+fi
+
+# Get admin state
+result_admin=$(snmpget $ros_conn -Oqv $oid_ifAdminStatus.$interface_index 2>/dev/null | tr -d '"')
+if [[ "$result_admin" == "1" ]] || [[ "$result_admin" == "up"  ]]; then
+	admin_state_res="1"
+elif [[ "$result_admin" == "2" ]] || [[ "$result_admin" == "down" ]]; then
+	admin_state_res="0"
+else
+	echo "ERR: admin state unknown | 0 0"; exit $unkn_error
+fi
+
+# Get oper state
+result_oper=$(snmpget $ros_conn -Oqv $oid_ifOperStatus.$interface_index 2>/dev/null | tr -d '"')
+if [[ "$result_oper" == "1" ]] || [[ "$result_oper" == "up" ]]; then
+	oper_state_res="1"
+elif [[ "$result_oper" == "2" ]] || [[ "$result_oper" == "down" ]]; then
+	oper_state_res="0"
+else
+	echo "ERR: oper state unknown | 0 0"; exit $unkn_error
+fi
+
+
+# Prevent illogical condition
+if [[ $admin_state_res == "0" ]] && [[ $oper_state_res == "1" ]]; then echo "ERR: down up illogical state | 0 0"; exit $unkn_error; fi
+
+# Define current state value
+current_state=$((admin_state_res + oper_state_res))
+
+
+# Define human readable Response variables for current state
+if [[ $current_state == "2" ]]; then 
+	current_state_h="UP UP"
+        metric=" admin=1 oper=1 "
+elif [[ $current_state == "1" ]]; then 
+	current_state_h="UP DOWN"
+        metric=" admin=1 oper=0 "
+else
+	current_state_h="DOWN DOWN"
+        metric=" admin=0 oper=0 "
+fi
+
+# Define human readable Response variables for desired state
+if [[ "$desired_state" == "2" ]]; then 
+	desired_state_h="UP UP"
+elif [[ "$desired_state" == "1" ]]; then 
+	desired_state_h="UP DOWN"
+else
+	desired_state_h="DOWN DOWN"
+fi
+
+# Get description and type if set
+if [[ "$display_type" == "1" ]]; then
+r_display_type="T:"$(snmpget $ros_conn -Oqv $oid_ifType.$interface_index 2>/dev/null | tr -d '"' | grep -Eo "^.{,15}") ; fi
+if [[ "$display_desc" == "1" ]]; then
+r_display_desc="D:"$(snmpget $ros_conn -Oqv $oid_ifDescr.$interface_index 2>/dev/null | tr -d '"' | grep -Eo "^.{,25}") ; fi
+
+
+
+# Responses
+ok_return="OK: Int:$interface_index $r_display_type $r_display_desc State:$current_state_h | $metric"
+oper_return="OPER CHANGE: Int:$interface_index $r_display_type $r_display_desc State:$current_state_h Desired:$desired_state_h | $metric"
+admin_return="ADMIN CHANGE: Int:$interface_index $r_display_type $r_display_desc State:$current_state_h Desired:$desired_state_h | $metric"
+
+# Check if state changed. For math  used refer to --table and check numbers within parentheses. 
+
+sum_res=$((desired_state + current_state))
+
+if [[ "$desired_state" == "$current_state" ]]; then # If they match must be fine
+	echo "$ok_return"; exit $exit_ok
+elif [[ "$ignore_oper" == "no" ]] && [[ "$sum_res"  =~ (2|3) ]]; then # Reference --table
+	echo "$oper_return"; exit $oper_error
+elif [[ "$ignore_oper" == "yes" ]] && [[ "$sum_res"  == "3" ]]; then # Reference --table
+	echo "$ok_return"; exit $exit_ok
+else
+	echo "$admin_return"; exit $admin_error # Only options left are admin_errors
+fi
+
+exit 3
