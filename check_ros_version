@@ -81,7 +81,7 @@ Plugin specific options
   -V, --version		display package version number	
   -H, --hostname	hostname or ip address, non-optional
   --track		Enable version tracking using lsrel.com []
-  --dc, --desired_channel	Set RouterOS update channel [auto] (current|testing|bugfix)
+  --dc, --desired_channel	Set RouterOS desired channel if --track used [auto] (current|testing|bugfix)
 
 Customize return codes used (0-Ok, 1-Warning, 2-Critical, 3-Unknown)
   --r1, --return_if_not_current		Return code if version not current [1] (0|1|2|3)
@@ -275,7 +275,7 @@ fi
 
 # If result valid and --track not set
 if [[ "$result" =~ $response_regex ]] && [[ $track_version == "no" ]]; then
-	echo "OK: $result | $metric"  	# Echo only result and exit ok
+	echo "OK: $result | ver=$metric"  	# Echo only result and exit ok
 	exit 0
 
 
@@ -284,18 +284,18 @@ if [[ "$result" =~ $response_regex ]] && [[ $track_version == "no" ]]; then
 elif [[ "$result" =~ $response_regex ]] && [[ $track_version == "yes" ]]; then
 
 	# Get current version from lsrel.com
-	current_ver=$(curl -s --max-time 2 https://$ros_channel.routeros.lsrel.com) || { echo "MAYBE CURRENT: $result | $metric"; exit $return_maybe; }
+	current_ver=$(curl -s --max-time 2 https://$ros_channel.routeros.lsrel.com) || { echo "MAYBE CURRENT: $result | ver=$metric"; exit $return_maybe; }
 
 	if [[ "$current_ver" == $ros_version ]]; then # If both the same
-	        echo "CURRENT: $result | $metric"
+	        echo "CURRENT: $result | ver=$metric"
        		exit 0
 
 	elif [[ "$current_ver" == "" ]] || [[ ! $current_ver =~ $ros_ver_regex ]];then # If response from lsrel.com empty or does not match regex
-                echo "MAYBE CURRENT: $result | $metric"
+                echo "MAYBE CURRENT: $result | ver=$metric"
                 exit $return_maybe
 
 	else
-		echo "NOT CURRENT: NEW=\"$current_ver($ros_channel)\" $result | $metric" # Else response from lsrel.com must be ok and version newer(?)
+		echo "NOT CURRENT: NEW=\"$current_ver($ros_channel)\" $result | ver=$metric" # Else response from lsrel.com must be ok and version newer(?)
                 exit $return_not_curr
 	fi	
 
