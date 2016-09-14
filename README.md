@@ -36,7 +36,7 @@ Optionally return interface description and/or type. Response:
 
 Error looks like this:
 
-*OPER CHANGE: Int:9   State:UP DOWN Desired:UP UP |  admin=1 oper=0 *
+*OPER CHANGE: Int:9   State:UP DOWN Desired:UP UP |  admin=1 oper=0*
 
 Other options include: ignore operational state changes - useful for wifi or vpn interfaces.
 

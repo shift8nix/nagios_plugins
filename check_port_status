@@ -357,7 +357,7 @@ if [[ "$result_admin" == "1" ]] || [[ "$result_admin" == "up"  ]]; then
 elif [[ "$result_admin" == "2" ]] || [[ "$result_admin" == "down" ]]; then
 	admin_state_res="0"
 else
-	echo "ERR: admin state unknown | 0 0"; exit $unkn_error
+	echo "ERR: admin state unknown | admin=0 oper=0 "; exit $unkn_error
 fi
 
 # Get oper state
@@ -367,12 +367,12 @@ if [[ "$result_oper" == "1" ]] || [[ "$result_oper" == "up" ]]; then
 elif [[ "$result_oper" == "2" ]] || [[ "$result_oper" == "down" ]]; then
 	oper_state_res="0"
 else
-	echo "ERR: oper state unknown | 0 0"; exit $unkn_error
+	echo "ERR: oper state unknown | admin=0 oper=0 "; exit $unkn_error
 fi
 
 
 # Prevent illogical condition
-if [[ $admin_state_res == "0" ]] && [[ $oper_state_res == "1" ]]; then echo "ERR: down up illogical state | 0 0"; exit $unkn_error; fi
+if [[ $admin_state_res == "0" ]] && [[ $oper_state_res == "1" ]]; then echo "ERR: down up illogical state | admin=0 oper=0 "; exit $unkn_error; fi
 
 # Define current state value
 current_state=$((admin_state_res + oper_state_res))
