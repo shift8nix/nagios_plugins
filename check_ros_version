@@ -284,7 +284,7 @@ if [[ "$result" =~ $response_regex ]] && [[ $track_version == "no" ]]; then
 elif [[ "$result" =~ $response_regex ]] && [[ $track_version == "yes" ]]; then
 
 	# Get current version from lsrel.com
-	current_ver=$(curl -s --max-time 2 https://$ros_channel.routeros.lsrel.com) || { echo "MAYBE CURRENT: $result | ver=$metric"; exit $return_maybe; }
+	current_ver=$(curl -s --max-time 2 https://$ros_channel.routeros.lsrel.com) || { echo "MAYBE CURRENT: $result | ver=$metric"; exit $return_if_maybe; }
 
 	if [[ "$current_ver" == $ros_version ]]; then # If both the same
 	        echo "CURRENT: $result | ver=$metric"
@@ -292,11 +292,11 @@ elif [[ "$result" =~ $response_regex ]] && [[ $track_version == "yes" ]]; then
 
 	elif [[ "$current_ver" == "" ]] || [[ ! $current_ver =~ $ros_ver_regex ]];then # If response from lsrel.com empty or does not match regex
                 echo "MAYBE CURRENT: $result | ver=$metric"
-                exit $return_maybe
+                exit $return_if_maybe
 
 	else
 		echo "NOT CURRENT: NEW=\"$current_ver($ros_channel)\" $result | ver=$metric" # Else response from lsrel.com must be ok and version newer(?)
-                exit $return_not_curr
+                exit $return_if_not_current
 	fi	
 
 
@@ -304,7 +304,7 @@ elif [[ "$result" =~ $response_regex ]] && [[ $track_version == "yes" ]]; then
 # If result not valid failsafe
 else
 	echo  "ERR: snmpget - Could not get result | 0"
-	exit $return_no_res
+	exit $return_if_no_result
 fi
 
 exit 3
